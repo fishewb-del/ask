@@ -1,18 +1,18 @@
-// AskDocs frontend — plain ES modules, no build step. This is the in-browser
-// edition: instead of calling a server API, it talks directly to local modules that
-// store data in IndexedDB and run the AI model in the browser. Nothing is uploaded.
+// AskDocs frontend — plain ES modules, no build step. In-browser edition: it talks
+// directly to local modules that store data in IndexedDB, run the embedding model in
+// the browser, and (optionally) run a small open-source LLM in the browser for
+// reasoned, cited prose answers. Nothing is ever uploaded.
 import * as db from './lib/db.js';
 import { ingestFile } from './lib/ingest.js';
 import { search, invalidate } from './lib/search.js';
-import { answer } from './lib/generator.js';
+import { answer, buildMessages, citationsFor } from './lib/generator.js';
 import { warmup } from './lib/embedder.js';
+import * as llm from './lib/llm.js';
 
 const $ = (sel) => document.querySelector(sel);
-const state = { notebookId: null, notebookName: '' };
+const state = { notebookId: null, notebookName: '', answerMode: 'extractive', llmReady: false };
 
-// ---------- Engine status ----------
-// Load the embedding model in the background and report whether we're in full
-// hybrid mode or keyword-only mode (e.g. offline on the very first visit).
+// ---------- Engine status (embeddings) ----------
 const engine = $('#engineStatus');
 engine.textContent = 'Loading local AI model… (one-time ~25MB download)';
 warmup().then((ok) => {
@@ -24,6 +24,62 @@ warmup().then((ok) => {
     engine.className = 'engine warn';
   }
 });
+
+// ---------- AI answers (optional in-browser LLM) ----------
+const answerMode = $('#answerMode');
+const aiSetup = $('#aiSetup');
+const modelSelect = $('#modelSelect');
+const loadModelBtn = $('#loadModelBtn');
+const aiProgress = $('#aiProgress');
+
+(function initAiPanel() {
+  if (!llm.webgpuAvailable()) {
+    // No WebGPU → keep AI option visible but explain it can't run here.
+    const opt = answerMode.querySelector('option[value="llm"]');
+    opt.textContent = 'AI prose — needs WebGPU';
+    opt.disabled = true;
+    return;
+  }
+  for (const m of llm.availableModels()) {
+    const o = document.createElement('option');
+    o.value = m.id;
+    o.textContent = m.label;
+    modelSelect.appendChild(o);
+  }
+})();
+
+answerMode.onchange = () => {
+  state.answerMode = answerMode.value;
+  const wantLlm = state.answerMode === 'llm';
+  aiSetup.classList.toggle('hidden', !wantLlm || state.llmReady);
+};
+
+loadModelBtn.onclick = async () => {
+  const id = modelSelect.value;
+  if (!id) return;
+  loadModelBtn.disabled = true;
+  aiProgress.className = 'ai-progress';
+  aiProgress.classList.remove('hidden');
+  aiProgress.textContent = 'Starting download…';
+  try {
+    await llm.loadModel(id, (r) => {
+      const pct = r.progress ? ` ${Math.round(r.progress * 100)}%` : '';
+      aiProgress.textContent = (r.text || 'Loading model…') + pct;
+    });
+    state.llmReady = true;
+    state.answerMode = 'llm';
+    answerMode.value = 'llm';
+    aiProgress.className = 'ai-progress ready';
+    aiProgress.textContent = `AI answers ready · ${llm.currentModel()}`;
+    setTimeout(() => aiSetup.classList.add('hidden'), 1500);
+  } catch (e) {
+    aiProgress.className = 'ai-progress warn';
+    aiProgress.textContent = e.message;
+    answerMode.value = 'extractive';
+    state.answerMode = 'extractive';
+  }
+  loadModelBtn.disabled = false;
+};
 
 // ---------- Notebooks ----------
 async function loadNotebooks() {
@@ -107,7 +163,6 @@ $('#fileInput').onchange = async (e) => {
   status.style.color = 'var(--muted)';
   status.textContent = `Reading & indexing ${files.length} file(s)… (first run loads the model)`;
 
-  // Process files one at a time, locally — mirrors the server's per-file results.
   const failed = [];
   for (const f of files) {
     try {
@@ -140,10 +195,15 @@ $('#askForm').onsubmit = async (e) => {
   const btn = $('#askForm button');
   btn.disabled = true;
   try {
-    const { results, totalChunks } = await search(state.notebookId, query, 6);
-    const composed = await answer(query, results);
-    thinking.innerHTML = renderAnswer({ ...composed, passages: results, totalChunks });
-    wireCitations(thinking);
+    const { results } = await search(state.notebookId, query, 6);
+    const useLlm = state.answerMode === 'llm' && state.llmReady && results.length > 0;
+    if (useLlm) {
+      await streamLlmAnswer(thinking, query, results);
+    } else {
+      const composed = await answer(query, results);
+      thinking.innerHTML = renderAnswer(composed, query);
+      wireCitations(thinking);
+    }
   } catch (err) {
     thinking.innerHTML = `<div class="answer">⚠️ ${esc(err.message)}</div>`;
   }
@@ -151,13 +211,28 @@ $('#askForm').onsubmit = async (e) => {
   $('#messages').scrollTop = $('#messages').scrollHeight;
 };
 
-function renderAnswer(res) {
+// Stream a generated answer token-by-token, then swap in clickable citations.
+async function streamLlmAnswer(thinking, query, results) {
+  thinking.innerHTML = '<div class="answer"></div>';
+  const ansEl = thinking.querySelector('.answer');
+  const messages = buildMessages(query, results);
+  let buf = '';
+  const full = await llm.generate(messages, (delta) => {
+    buf += delta;
+    ansEl.textContent = buf; // textContent escapes; safe during streaming
+    $('#messages').scrollTop = $('#messages').scrollHeight;
+  });
+  thinking.innerHTML = renderAnswer({ answer: full || buf, citations: citationsFor(results) }, query);
+  wireCitations(thinking);
+}
+
+function renderAnswer(res, query) {
   const answerHtml = esc(res.answer).replace(/\[(\d+)\]/g,
     (_, n) => `<span class="cite-ref" data-n="${n}">[${n}]</span>`);
   const cites = (res.citations || []).map((c) => `
     <div class="citation" data-n="${c.n}">
       <div class="src">[${c.n}] ${esc(c.filename)}${c.locator ? ' · ' + esc(c.locator) : ''}</div>
-      <div class="snip">${esc(c.snippet)}</div>
+      <div class="snip">${highlight(esc(c.snippet), query)}</div>
     </div>`).join('');
   return `<div class="answer">${answerHtml}</div>
     ${cites ? `<div class="citations">${cites}</div>` : ''}`;
@@ -190,6 +265,19 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+
+const HL_STOP = new Set('the and for that this with from what when where which who why how are was about your you our'.split(' '));
+const rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Wrap query terms in <mark> within already-escaped snippet text.
+function highlight(escaped, query) {
+  if (!query) return escaped;
+  const terms = [...new Set((query.toLowerCase().match(/[a-z0-9#./-]{3,}/g) || [])
+    .filter((w) => !HL_STOP.has(w)))];
+  if (!terms.length) return escaped;
+  const re = new RegExp(`\\b(${terms.map(rx).join('|')})`, 'gi');
+  return escaped.replace(re, '<mark>$&</mark>');
+}
+
 const kindIcon = (k) => ({ pdf: '📄', docx: '📝', csv: '📊', text: '🗒️' }[k] || '📄');
 
 loadNotebooks();

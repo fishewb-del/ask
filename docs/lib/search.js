@@ -1,7 +1,8 @@
 // Hybrid retrieval: combines semantic similarity (embeddings) with keyword search
 // (MiniSearch/BM25) using Reciprocal Rank Fusion. Semantic catches paraphrases;
 // keyword nails exact terms, codes, and names. Together they're far more robust
-// than either alone. Returns ranked passages with citations and highlights.
+// than either alone. Returns ranked passages with citations and highlights, with
+// near-duplicate passages removed so the top results are diverse.
 import MiniSearch from 'https://esm.sh/minisearch@7.1.1';
 import { embed } from './embedder.js';
 import { getNotebookChunks } from './db.js';
@@ -61,23 +62,33 @@ function rrf(rankedLists, k = 60) {
   return scores;
 }
 
-// Pull the most query-relevant sentence out of a chunk for a tight preview.
+// Word-set Jaccard similarity — used to drop near-duplicate passages (common when
+// overlapping chunk windows both rank highly).
+const wordSet = (s) => new Set((s.toLowerCase().match(/[a-z0-9]+/g) || []));
+function jaccard(a, b) {
+  const A = wordSet(a), B = wordSet(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  return inter / (A.size + B.size - inter);
+}
+
+// Pull the most query-relevant sentence (plus a little surrounding context) out of
+// a chunk for a tight, readable preview.
 function bestSnippet(text, queryTerms) {
-  // Drop markdown header markers and collapse whitespace so previews read cleanly.
   const clean = text.replace(/^#+\s+/gm, '').replace(/\s+/g, ' ').trim();
   const sentences = clean.split(/(?<=[.!?])\s+/).filter((s) => s.trim());
-  if (sentences.length <= 1) return text;
-  let best = sentences[0];
-  let bestScore = -1;
-  for (const s of sentences) {
+  if (sentences.length <= 1) return clean.slice(0, 320);
+  let bestIdx = 0, bestScore = -1;
+  sentences.forEach((s, i) => {
     const low = s.toLowerCase();
     const score = queryTerms.reduce((acc, t) => acc + (low.includes(t) ? 1 : 0), 0);
-    if (score > bestScore) {
-      bestScore = score;
-      best = s;
-    }
-  }
-  return best.trim();
+    if (score > bestScore) { bestScore = score; bestIdx = i; }
+  });
+  let snip = sentences[bestIdx];
+  // Add the following sentence for context if the lead is short.
+  if (sentences[bestIdx + 1] && snip.length < 200) snip += ' ' + sentences[bestIdx + 1];
+  return snip.trim().slice(0, 360);
 }
 
 export async function search(notebookId, query, k = 6) {
@@ -104,14 +115,16 @@ export async function search(notebookId, query, k = 6) {
   // --- Keyword ranking (stopword-filtered) ---
   const kwRanked = index.mini.search(keywordize(query)).slice(0, 50).map((r) => r.id);
 
-  // --- Fuse (one or both lists) ---
+  // --- Fuse, then drop near-duplicates and keep the top k diverse passages ---
   const fused = rrf([semRanked, kwRanked]);
-  const ranked = [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, k);
+  const ranked = [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, k * 3);
 
   const queryTerms = query.toLowerCase().match(/\w+/g) || [];
-  const results = ranked.map(([id, score]) => {
+  const results = [];
+  for (const [id, score] of ranked) {
     const c = index.byId.get(id);
-    return {
+    if (results.some((r) => jaccard(r.text, c.text) > 0.85)) continue; // skip duplicates
+    results.push({
       chunkId: c.id,
       filename: c.filename,
       locator: c.locator,
@@ -119,8 +132,9 @@ export async function search(notebookId, query, k = 6) {
       snippet: bestSnippet(c.text, queryTerms),
       text: c.text,
       score: Number(score.toFixed(4)),
-    };
-  });
+    });
+    if (results.length >= k) break;
+  }
 
   return { results, totalChunks: index.chunks.length, mode };
 }

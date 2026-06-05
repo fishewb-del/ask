@@ -11,6 +11,21 @@
     <div class="brand">📓 AskDocs <span class="tag">in-browser</span></div>
     <div id="engineStatus" class="engine">Starting…</div>
 
+    <div id="aiPanel" class="ai-panel">
+      <label class="ai-row">
+        <span>Answers</span>
+        <select id="answerMode">
+          <option value="extractive">Quick — no download</option>
+          <option value="llm">AI prose — local model</option>
+        </select>
+      </label>
+      <div id="aiSetup" class="hidden">
+        <select id="modelSelect"></select>
+        <button id="loadModelBtn" class="btn-sm">Download &amp; enable</button>
+        <div id="aiProgress" class="ai-progress hidden"></div>
+      </div>
+    </div>
+
     <div class="section-head">
       <span>Notebooks</span>
       <button id="newNotebookBtn" class="ghost" title="New notebook">＋</button>
