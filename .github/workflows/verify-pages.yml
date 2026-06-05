@@ -1,0 +1,35 @@
+name: Verify live site
+
+# After each push to main, wait for GitHub Pages to publish, then confirm the live
+# site is actually serving the app. Shows a green check (or a red X) on the commit,
+# so you don't have to check the site by hand.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for GitHub Pages, then verify it's live
+        run: |
+          url="https://fishewb-del.github.io/ask/"
+          app="https://fishewb-del.github.io/ask/app.js"
+          echo "Confirming $url is live…"
+          for i in $(seq 1 12); do
+            code=$(curl -sS -o page.html -w "%{http_code}" "$url" || echo 000)
+            acode=$(curl -sS -o /dev/null -w "%{http_code}" "$app" || echo 000)
+            if [ "$code" = "200" ] && [ "$acode" = "200" ] && grep -q "AskDocs" page.html; then
+              echo "✅ Live and serving the app: $url"
+              exit 0
+            fi
+            echo "Attempt $i/12: page=$code app.js=$acode — waiting 30s for Pages to update…"
+            sleep 30
+          done
+          echo "❌ Could not confirm the site updated (last: page=$code app.js=$acode)."
+          echo "If this keeps failing, check Settings → Pages is set to: Branch = main, Folder = /docs."
+          exit 1
