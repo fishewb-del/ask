@@ -1,0 +1,6 @@
+node_modules/
+# Local runtime data (db, model cache, logs) — never committed
+data/*
+!data/.gitkeep
+.DS_Store
+*.log

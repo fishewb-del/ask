@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AskDocs — ask your documents</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <aside id="sidebar">
+    <div class="brand">📓 AskDocs <span class="tag">offline</span></div>
+
+    <div class="section-head">
+      <span>Notebooks</span>
+      <button id="newNotebookBtn" class="ghost" title="New notebook">＋</button>
+    </div>
+    <ul id="notebookList" class="list"></ul>
+
+    <div id="sourcesArea" class="hidden">
+      <div class="section-head">
+        <span>Sources</span>
+        <label class="ghost upload" title="Add documents">
+          ＋<input id="fileInput" type="file" multiple
+                   accept=".pdf,.docx,.txt,.md,.markdown,.csv" hidden />
+        </label>
+      </div>
+      <div id="uploadStatus" class="upload-status hidden"></div>
+      <ul id="sourceList" class="list small"></ul>
+      <p class="hint">PDF · Word · Markdown/Text · CSV</p>
+    </div>
+  </aside>
+
+  <main id="main">
+    <div id="emptyState" class="empty">
+      <h1>Ask your documents.</h1>
+      <p>Create a notebook, add some files, and ask away — everything runs locally on
+         your machine. Answers cite the exact source and page.</p>
+    </div>
+
+    <section id="chat" class="hidden">
+      <header id="chatHeader">
+        <h2 id="chatTitle"></h2>
+        <span id="chatMeta" class="meta"></span>
+      </header>
+      <div id="messages" class="messages"></div>
+      <form id="askForm" class="ask">
+        <input id="askInput" type="text" autocomplete="off"
+               placeholder="Ask a question about your sources…" />
+        <button type="submit">Ask</button>
+      </form>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
