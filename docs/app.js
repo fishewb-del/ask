@@ -32,15 +32,18 @@ const modelSelect = $('#modelSelect');
 const loadModelBtn = $('#loadModelBtn');
 const aiProgress = $('#aiProgress');
 
-(function initAiPanel() {
-  if (!llm.webgpuAvailable()) {
-    // No WebGPU → keep AI option visible but explain it can't run here.
+(async function initAiPanel() {
+  const caps = await llm.gpuCapabilities();
+  if (!caps.ok) {
+    // No usable WebGPU → keep AI option visible but explain it can't run here.
     const opt = answerMode.querySelector('option[value="llm"]');
     opt.textContent = 'AI prose — needs WebGPU';
     opt.disabled = true;
     return;
   }
-  for (const m of llm.availableModels()) {
+  // Only offer models this GPU can actually run (hides f16-only models when the
+  // GPU lacks shader-f16, which otherwise crashes with a GPU buffer error).
+  for (const m of llm.availableModels({ f16: caps.f16 })) {
     const o = document.createElement('option');
     o.value = m.id;
     o.textContent = m.label;
@@ -211,19 +214,35 @@ $('#askForm').onsubmit = async (e) => {
   $('#messages').scrollTop = $('#messages').scrollHeight;
 };
 
-// Stream a generated answer token-by-token, then swap in clickable citations.
+// Stream a generated answer token-by-token, then swap in clickable citations. If the
+// GPU model faults, fall back to a Quick (extractive) answer so the user still gets a
+// result, and reset the AI panel so they can re-enable.
 async function streamLlmAnswer(thinking, query, results) {
   thinking.innerHTML = '<div class="answer"></div>';
   const ansEl = thinking.querySelector('.answer');
   const messages = buildMessages(query, results);
   let buf = '';
-  const full = await llm.generate(messages, (delta) => {
-    buf += delta;
-    ansEl.textContent = buf; // textContent escapes; safe during streaming
-    $('#messages').scrollTop = $('#messages').scrollHeight;
-  });
-  thinking.innerHTML = renderAnswer({ answer: full || buf, citations: citationsFor(results) }, query);
-  wireCitations(thinking);
+  try {
+    const full = await llm.generate(messages, (delta) => {
+      buf += delta;
+      ansEl.textContent = buf; // textContent escapes; safe during streaming
+      $('#messages').scrollTop = $('#messages').scrollHeight;
+    });
+    thinking.innerHTML = renderAnswer({ answer: full || buf, citations: citationsFor(results) }, query);
+    wireCitations(thinking);
+  } catch (err) {
+    // Model died (e.g. GPU error). Drop to Quick mode and still answer the question.
+    state.llmReady = false;
+    state.answerMode = 'extractive';
+    answerMode.value = 'extractive';
+    aiSetup.classList.remove('hidden');
+    aiProgress.className = 'ai-progress warn';
+    aiProgress.textContent = 'AI model unloaded after a GPU error — re-enable to retry, or use Quick mode.';
+    const composed = await answer(query, results);
+    thinking.innerHTML = renderAnswer(composed, query) +
+      `<div class="upload-status">⚠️ ${esc(err.message)}</div>`;
+    wireCitations(thinking);
+  }
 }
 
 function renderAnswer(res, query) {
