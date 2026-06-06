@@ -113,7 +113,7 @@ function reconstructSegments(items, pageNum) {
   return segments;
 }
 
-async function parsePdf(buffer) {
+async function parsePdf(buffer, onProgress) {
   const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
   const segments = [];
   for (let p = 1; p <= doc.numPages; p++) {
@@ -127,6 +127,9 @@ async function parsePdf(buffer) {
       const text = content.items.map((it) => it.str).join(' ').replace(/\s+/g, ' ').trim();
       if (text) segments.push({ text, page: p, locator: `p.${p}` });
     }
+    page.cleanup?.(); // free the page's resources to keep memory flat
+    if (onProgress) onProgress({ phase: 'parse', page: p, pages: doc.numPages });
+    if (p % 2 === 0) await new Promise((r) => setTimeout(r)); // yield to the event loop
   }
   await doc.destroy();
   return { kind: 'pdf', segments };
@@ -180,10 +183,11 @@ const extOf = (name) => {
   return m ? m[0] : '';
 };
 
-// `buffer` is an ArrayBuffer read from the user's File.
-export async function parseFile(filename, buffer) {
+// `buffer` is an ArrayBuffer read from the user's File. onProgress (optional) is
+// forwarded to parsers that support it (PDF) and ignored by the others.
+export async function parseFile(filename, buffer, onProgress) {
   const ext = extOf(filename);
   const fn = EXT[ext];
   if (!fn) throw new Error(`Unsupported file type: ${ext || '(none)'}`);
-  return fn(buffer);
+  return fn(buffer, onProgress);
 }

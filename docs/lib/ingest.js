@@ -1,5 +1,8 @@
 // Ingestion pipeline: read a File -> parse -> split into overlapping chunks ->
-// embed each chunk -> store in IndexedDB. Runs entirely in the browser.
+// embed each chunk -> store in IndexedDB. The heavy work (parsing geometry, and
+// especially embedding) is kept off the main thread / streamed in batches so the UI
+// stays responsive even for large or multiple PDFs. Progress is reported via the
+// onProgress callback.
 import { parseFile } from './parsers.js';
 import { embed } from './embedder.js';
 import { createSource, insertChunks, setSourceChunkCount } from './db.js';
@@ -20,39 +23,38 @@ function windowSegment(seg) {
   return out;
 }
 
-export async function ingestFile(notebookId, file) {
+export async function ingestFile(notebookId, file, onProgress = () => {}) {
   const buffer = await file.arrayBuffer();
-  const { kind, segments } = await parseFile(file.name, buffer);
+  const { kind, segments } = await parseFile(file.name, buffer, onProgress);
   const chunks = segments.flatMap(windowSegment).filter((c) => c.text.trim().length > 1);
   if (chunks.length === 0) throw new Error('No readable text found in this file.');
 
-  // Embed in batches to keep memory reasonable on large docs. If embeddings are
-  // unavailable (model couldn't load), embed() returns null and we store chunks
-  // without vectors — keyword search still works.
-  const vectors = [];
+  const sourceId = await createSource(notebookId, file.name, kind);
+
+  // Embed + store in batches: keeps memory flat and lets the index grow incrementally.
+  // The embedding model runs in a worker, so this loop never blocks the UI. If
+  // embeddings are unavailable, embed() returns null and we store chunks without
+  // vectors — keyword search still works.
   const BATCH = 32;
+  let done = 0;
   for (let i = 0; i < chunks.length; i += BATCH) {
-    const batch = chunks.slice(i, i + BATCH).map((c) => c.text);
-    const embs = await embed(batch);
-    if (embs === null) {
-      for (let j = 0; j < batch.length; j++) vectors.push(null);
-    } else {
-      for (const e of embs) vectors.push(e);
-    }
+    const slice = chunks.slice(i, i + BATCH);
+    const embs = await embed(slice.map((c) => c.text));
+    await insertChunks(
+      slice.map((c, j) => ({
+        source_id: sourceId,
+        notebook_id: notebookId,
+        ordinal: i + j,
+        page: c.page ?? null,
+        locator: c.locator ?? null,
+        text: c.text,
+        embedding: embs && embs[j] ? embs[j] : null,
+      }))
+    );
+    done += slice.length;
+    onProgress({ phase: 'embed', done, total: chunks.length });
   }
 
-  const sourceId = await createSource(notebookId, file.name, kind);
-  await insertChunks(
-    chunks.map((c, i) => ({
-      source_id: sourceId,
-      notebook_id: notebookId,
-      ordinal: i,
-      page: c.page ?? null,
-      locator: c.locator ?? null,
-      text: c.text,
-      embedding: vectors[i] || null, // Float32Array, stored directly by IndexedDB
-    }))
-  );
   await setSourceChunkCount(sourceId, chunks.length);
   return { sourceId, kind, chunkCount: chunks.length };
 }

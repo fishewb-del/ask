@@ -167,14 +167,25 @@ $('#fileInput').onchange = async (e) => {
   status.textContent = `Reading & indexing ${files.length} file(s)… (first run loads the model)`;
 
   const failed = [];
-  for (const f of files) {
+  for (let fi = 0; fi < files.length; fi++) {
+    const f = files[fi];
+    const prefix = files.length > 1 ? `(${fi + 1}/${files.length}) ` : '';
+    status.textContent = `${prefix}Reading ${f.name}…`;
     try {
-      await ingestFile(state.notebookId, f);
+      await ingestFile(state.notebookId, f, (p) => {
+        if (p.phase === 'parse') {
+          status.textContent = `${prefix}${f.name}: reading page ${p.page}/${p.pages}…`;
+        } else if (p.phase === 'embed') {
+          status.textContent = `${prefix}${f.name}: indexing ${p.done}/${p.total} passages…`;
+        }
+      });
     } catch (err) {
       failed.push({ filename: f.name, error: err.message });
     }
+    // Make each finished file searchable and visible right away.
+    invalidate(state.notebookId);
+    loadSources();
   }
-  invalidate(state.notebookId);
 
   if (failed.length) {
     status.style.color = 'var(--warn)';
