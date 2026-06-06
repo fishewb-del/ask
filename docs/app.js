@@ -16,6 +16,14 @@ const isPdf = (name) => /\.pdf$/i.test(name || '');
 const $ = (sel) => document.querySelector(sel);
 const state = { notebookId: null, notebookName: '', answerMode: 'extractive', llmReady: false };
 
+// ---------- Mobile drawer ----------
+const sidebar = $('#sidebar');
+const scrim = $('#scrim');
+const openDrawer = () => { sidebar.classList.add('open'); scrim.classList.remove('hidden'); };
+const closeDrawer = () => { sidebar.classList.remove('open'); scrim.classList.add('hidden'); };
+$('#menuToggle').onclick = () => (sidebar.classList.contains('open') ? closeDrawer() : openDrawer());
+scrim.onclick = closeDrawer;
+
 // ---------- Engine status (embeddings) ----------
 const engine = $('#engineStatus');
 engine.textContent = 'Loading local AI model… (one-time ~25MB download)';
@@ -137,6 +145,7 @@ async function selectNotebook(id, name) {
   $('#sourcesArea').classList.remove('hidden');
   $('#chatTitle').textContent = name;
   $('#messages').innerHTML = '';
+  closeDrawer(); // on mobile, get out of the way after picking a notebook
   await Promise.all([loadNotebooks(), loadSources()]);
 }
 
