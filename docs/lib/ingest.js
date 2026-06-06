@@ -24,9 +24,9 @@ function windowSegment(seg) {
   return out;
 }
 
-export async function ingestFile(notebookId, file, onProgress = () => {}) {
+export async function ingestFile(notebookId, file, onProgress = () => {}, opts = {}) {
   const buffer = await file.arrayBuffer();
-  const { kind, segments } = await parseFile(file.name, buffer, onProgress);
+  const { kind, segments } = await parseFile(file.name, buffer, onProgress, opts);
   const chunks = segments.flatMap(windowSegment).filter((c) => c.text.trim().length > 1);
   if (chunks.length === 0) throw new Error('No readable text found in this file.');
 

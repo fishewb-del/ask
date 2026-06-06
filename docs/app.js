@@ -184,6 +184,7 @@ $('#fileInput').onchange = async (e) => {
   status.style.color = 'var(--muted)';
   status.textContent = `Reading & indexing ${files.length} file(s)… (first run loads the model)`;
 
+  const useOcr = $('#ocrToggle')?.checked !== false;
   const failed = [];
   for (let fi = 0; fi < files.length; fi++) {
     const f = files[fi];
@@ -193,10 +194,12 @@ $('#fileInput').onchange = async (e) => {
       await ingestFile(state.notebookId, f, (p) => {
         if (p.phase === 'parse') {
           status.textContent = `${prefix}${f.name}: reading page ${p.page}/${p.pages}…`;
+        } else if (p.phase === 'ocr') {
+          status.textContent = `${prefix}${f.name}: reading scanned page ${p.page}/${p.pages} (OCR)…`;
         } else if (p.phase === 'embed') {
           status.textContent = `${prefix}${f.name}: indexing ${p.done}/${p.total} passages…`;
         }
-      });
+      }, { ocr: useOcr });
     } catch (err) {
       failed.push({ filename: f.name, error: err.message });
     }

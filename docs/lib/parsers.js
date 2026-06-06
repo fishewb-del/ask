@@ -5,6 +5,11 @@
 import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs';
 import mammoth from 'https://esm.sh/mammoth@1.9.0';
 import Papa from 'https://esm.sh/papaparse@5.5.2';
+import * as ocr from './ocr.js';
+
+// Pages whose embedded text is shorter than this are treated as scanned/image-only
+// and sent to OCR (when enabled).
+const SPARSE_CHARS = 100;
 
 // pdf.js needs a worker; point it at the matching CDN build.
 pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -113,13 +118,54 @@ function reconstructSegments(items, pageNum) {
   return segments;
 }
 
-async function parsePdf(buffer, onProgress) {
+// Render a PDF page to a canvas, capped in size, for OCR.
+async function renderPageToCanvas(page, maxDim = 2200) {
+  const base = page.getViewport({ scale: 1 });
+  const scale = Math.max(1, Math.min(2.5, maxDim / Math.max(base.width, base.height)));
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  return canvas;
+}
+
+async function ocrPage(page, p) {
+  const canvas = await renderPageToCanvas(page);
+  const text = await ocr.recognize(canvas);
+  canvas.width = canvas.height = 0; // free the bitmap
+  if (!text) return [];
+  return text
+    .split(/\n{2,}/)
+    .map((t) => t.replace(/\s+/g, ' ').trim())
+    .filter((t) => t.length > 1)
+    .map((t) => ({ text: t, page: p, locator: `p.${p} (scanned)` }));
+}
+
+async function parsePdf(buffer, onProgress, opts = {}) {
   const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+  const wantOcr = opts.ocr !== false;
+  let ocrChecked = false, ocrOk = false;
   const segments = [];
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
     const content = await page.getTextContent();
-    const segs = reconstructSegments(content.items, p);
+    let segs = reconstructSegments(content.items, p);
+    const chars = segs.reduce((a, s) => a + s.text.length, 0);
+
+    // Scanned/image-only page? OCR it (loading the engine lazily, just once).
+    if (wantOcr && chars < SPARSE_CHARS) {
+      if (!ocrChecked) { ocrChecked = true; ocrOk = await ocr.available(); }
+      if (ocrOk) {
+        if (onProgress) onProgress({ phase: 'ocr', page: p, pages: doc.numPages });
+        try {
+          const ocrSegs = await ocrPage(page, p);
+          if (ocrSegs.length) segs = segs.concat(ocrSegs);
+        } catch { /* keep whatever embedded text we had */ }
+      }
+    }
+
     if (segs.length) {
       segments.push(...segs);
     } else {
@@ -185,9 +231,9 @@ const extOf = (name) => {
 
 // `buffer` is an ArrayBuffer read from the user's File. onProgress (optional) is
 // forwarded to parsers that support it (PDF) and ignored by the others.
-export async function parseFile(filename, buffer, onProgress) {
+export async function parseFile(filename, buffer, onProgress, opts) {
   const ext = extOf(filename);
   const fn = EXT[ext];
   if (!fn) throw new Error(`Unsupported file type: ${ext || '(none)'}`);
-  return fn(buffer, onProgress);
+  return fn(buffer, onProgress, opts);
 }
