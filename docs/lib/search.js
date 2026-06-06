@@ -126,6 +126,7 @@ export async function search(notebookId, query, k = 6) {
     if (results.some((r) => jaccard(r.text, c.text) > 0.85)) continue; // skip duplicates
     results.push({
       chunkId: c.id,
+      sourceId: c.sourceId,
       filename: c.filename,
       locator: c.locator,
       page: c.page,

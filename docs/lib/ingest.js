@@ -6,6 +6,7 @@
 import { parseFile } from './parsers.js';
 import { embed } from './embedder.js';
 import { createSource, insertChunks, setSourceChunkCount } from './db.js';
+import { putFile } from './files.js';
 
 const MAX_WORDS = 220; // ~chunk size; small enough for precise citations
 const OVERLAP = 40;    // words shared between adjacent chunks to avoid cutting context
@@ -30,6 +31,12 @@ export async function ingestFile(notebookId, file, onProgress = () => {}) {
   if (chunks.length === 0) throw new Error('No readable text found in this file.');
 
   const sourceId = await createSource(notebookId, file.name, kind);
+
+  // Keep the original PDF on-device (OPFS) so it can be viewed full-fidelity later.
+  // Best-effort: a storage failure must never break indexing.
+  if (kind === 'pdf') {
+    try { await putFile(sourceId, file); } catch { /* viewing just won't be available */ }
+  }
 
   // Embed + store in batches: keeps memory flat and lets the index grow incrementally.
   // The embedding model runs in a worker, so this loop never blocks the UI. If

@@ -35,6 +35,7 @@ function jaccard(a, b) {
 export function citationsFor(passages) {
   return passages.map((p, i) => ({
     n: i + 1,
+    sourceId: p.sourceId,
     filename: p.filename,
     locator: p.locator,
     page: p.page,

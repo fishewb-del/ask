@@ -8,6 +8,10 @@ import { search, invalidate } from './lib/search.js';
 import { answer, buildMessages, citationsFor } from './lib/generator.js';
 import { warmup } from './lib/embedder.js';
 import * as llm from './lib/llm.js';
+import { openViewer } from './lib/viewer.js';
+import { deleteFile } from './lib/files.js';
+
+const isPdf = (name) => /\.pdf$/i.test(name || '');
 
 const $ = (sel) => document.querySelector(sel);
 const state = { notebookId: null, notebookName: '', answerMode: 'extractive', llmReady: false };
@@ -99,7 +103,9 @@ async function loadNotebooks() {
     li.querySelector('.del').onclick = async (e) => {
       e.stopPropagation();
       if (!confirm(`Delete notebook "${nb.name}" and all its sources?`)) return;
+      const srcs = await db.listSources(nb.id);
       await db.deleteNotebook(nb.id);
+      for (const s of srcs) deleteFile(s.id); // remove stored originals
       invalidate(nb.id);
       if (state.notebookId === nb.id) resetMain();
       loadNotebooks();
@@ -143,11 +149,14 @@ async function loadSources() {
   for (const s of sources) {
     chunks += s.num_chunks;
     const li = document.createElement('li');
+    const viewable = isPdf(s.filename);
     li.innerHTML = `<span class="kind">${kindIcon(s.kind)}</span>
-      <span class="name" title="${esc(s.filename)}">${esc(s.filename)}</span>
+      <span class="name${viewable ? ' viewable' : ''}" title="${viewable ? 'Open drawing' : esc(s.filename)}">${esc(s.filename)}</span>
       <button class="del" title="Remove">✕</button>`;
+    if (viewable) li.querySelector('.name').onclick = () => openViewer(s.id, s.filename, 1);
     li.querySelector('.del').onclick = async () => {
       await db.deleteSource(s.id);
+      deleteFile(s.id); // remove stored original
       invalidate(state.notebookId);
       loadSources();
     };
@@ -259,11 +268,17 @@ async function streamLlmAnswer(thinking, query, results) {
 function renderAnswer(res, query) {
   const answerHtml = esc(res.answer).replace(/\[(\d+)\]/g,
     (_, n) => `<span class="cite-ref" data-n="${n}">[${n}]</span>`);
-  const cites = (res.citations || []).map((c) => `
+  const cites = (res.citations || []).map((c) => {
+    const view = (isPdf(c.filename) && c.sourceId != null)
+      ? `<button class="view-page" data-src="${c.sourceId}" data-page="${c.page || 1}"
+                 data-file="${esc(c.filename)}" title="Open this page">view</button>`
+      : '';
+    return `
     <div class="citation" data-n="${c.n}">
-      <div class="src">[${c.n}] ${esc(c.filename)}${c.locator ? ' · ' + esc(c.locator) : ''}</div>
+      <div class="src">[${c.n}] ${esc(c.filename)}${c.locator ? ' · ' + esc(c.locator) : ''} ${view}</div>
       <div class="snip">${highlight(esc(c.snippet), query)}</div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   return `<div class="answer">${answerHtml}</div>
     ${cites ? `<div class="citations">${cites}</div>` : ''}`;
 }
@@ -278,6 +293,9 @@ function wireCitations(el) {
           { duration: 1200 });
       }
     };
+  });
+  el.querySelectorAll('.view-page').forEach((btn) => {
+    btn.onclick = () => openViewer(Number(btn.dataset.src), btn.dataset.file, Number(btn.dataset.page));
   });
 }
 
